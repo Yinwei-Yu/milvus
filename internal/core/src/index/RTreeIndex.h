@@ -68,7 +68,7 @@ class RTreeIndex : public ScalarIndex<T> {
         if (is_built_) {
             return total_num_rows_;
         }
-        return wrapper_ ? wrapper_->count() : 0;
+        return wrapper_ ? wrapper_->count() + wrapper_->null_count() : 0;
     }
 
     // BuildWithRawDataForUT should be only used in ut. Only string is supported.
