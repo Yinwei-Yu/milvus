@@ -230,7 +230,6 @@ RTreeIndex<T>::Build(const Config& config) {
         GetValueFromConfig<std::vector<std::string>>(config, "insert_files");
     AssertInfo(insert_files.has_value(),
                "insert_files were empty for building RTree index");
-
     InitForBuildIndex();
     auto fill_factor = GetFillFactorFromConfig(config);
     auto index_cap = GetIndexCapacityFromConfig(config);

@@ -271,9 +271,9 @@ TEST_F(RTreeIndexTest, Build_ConfigAndMetaJson) {
 
     nlohmann::json build_cfg;
     build_cfg["insert_files"] = std::vector<std::string>{remote_file};
-    build_cfg["fillFactor"] = 0.6;
-    build_cfg["indexCapacity"] = 32;
-    build_cfg["leafCapacity"] = 64;
+    build_cfg["fillFactor"] = "0.6";
+    build_cfg["indexCapacity"] = "32";
+    build_cfg["leafCapacity"] = "64";
     build_cfg["rv"] = "RSTAR";
 
     rtree.Build(build_cfg);
@@ -320,9 +320,9 @@ TEST_F(RTreeIndexTest, Build_ConfigAndMetaJson) {
     std::ifstream ifs(base_path + ".meta.json");
     ASSERT_TRUE(ifs.good());
     nlohmann::json meta = nlohmann::json::parse(ifs);
-    ASSERT_EQ(meta["fill_factor"], 0.6);
-    ASSERT_EQ(meta["index_capacity"], 32);
-    ASSERT_EQ(meta["leaf_capacity"], 64);
+    ASSERT_EQ(meta["fill_factor"], "0.6");
+    ASSERT_EQ(meta["index_capacity"], "32");
+    ASSERT_EQ(meta["leaf_capacity"], "64");
     ASSERT_EQ(meta["dimension"], 2);
 }
 
@@ -462,9 +462,9 @@ TEST_F(RTreeIndexTest, Build_EndToEnd_FromInsertFiles) {
 
     nlohmann::json build_cfg;
     build_cfg["insert_files"] = std::vector<std::string>{remote_file};
-    build_cfg["fillFactor"] = 0.8;
-    build_cfg["indexCapacity"] = 50;
-    build_cfg["leafCapacity"] = 50;
+    build_cfg["fillFactor"] = "0.8";
+    build_cfg["indexCapacity"] = "50";
+    build_cfg["leafCapacity"] = "50";
     build_cfg["rv"] = "RSTAR";
     rtree.Build(build_cfg);
     ASSERT_EQ(rtree.Count(), wkbs.size());
@@ -504,9 +504,9 @@ TEST_F(RTreeIndexTest, Build_Upload_Load_LargeDataset) {
 
     nlohmann::json build_cfg;
     build_cfg["insert_files"] = std::vector<std::string>{remote_file};
-    build_cfg["fillFactor"] = 0.8;
-    build_cfg["indexCapacity"] = 50;
-    build_cfg["leafCapacity"] = 50;
+    build_cfg["fillFactor"] = "0.8";
+    build_cfg["indexCapacity"] = "50";
+    build_cfg["leafCapacity"] = "50";
     build_cfg["rv"] = "RSTAR";
     rtree.Build(build_cfg);
 
@@ -558,9 +558,9 @@ TEST_F(RTreeIndexTest, Build_BulkLoad_Nulls_And_BadWKB) {
 
     nlohmann::json build_cfg;
     build_cfg["insert_files"] = std::vector<std::string>{remote_file};
-    build_cfg["fillFactor"] = 0.8;
-    build_cfg["indexCapacity"] = 50;
-    build_cfg["leafCapacity"] = 50;
+    build_cfg["fillFactor"] = "0.8";
+    build_cfg["indexCapacity"] = "50";
+    build_cfg["leafCapacity"] = "50";
     build_cfg["rv"] = "RSTAR";
     rtree.Build(build_cfg);
 
@@ -800,9 +800,9 @@ TEST_F(RTreeIndexTest, GIS_Index_Exact_Filtering) {
     milvus::index::RTreeIndex<std::string> rtree_build(fm_ctx);
     nlohmann::json build_cfg;
     build_cfg["insert_files"] = std::vector<std::string>{remote_file};
-    build_cfg["fillFactor"] = 0.8;
-    build_cfg["indexCapacity"] = 50;
-    build_cfg["leafCapacity"] = 50;
+    build_cfg["fillFactor"] = "0.8";
+    build_cfg["indexCapacity"] = "50";
+    build_cfg["leafCapacity"] = "50";
     build_cfg["rv"] = "RSTAR";
     rtree_build.Build(build_cfg);
     auto stats = rtree_build.Upload({});
