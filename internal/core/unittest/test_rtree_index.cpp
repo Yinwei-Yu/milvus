@@ -462,6 +462,10 @@ TEST_F(RTreeIndexTest, Build_EndToEnd_FromInsertFiles) {
 
     nlohmann::json build_cfg;
     build_cfg["insert_files"] = std::vector<std::string>{remote_file};
+    build_cfg["fillFactor"] = 0.8;
+    build_cfg["indexCapacity"] = 50;
+    build_cfg["leafCapacity"] = 50;
+    build_cfg["rv"] = "RSTAR";
     rtree.Build(build_cfg);
     ASSERT_EQ(rtree.Count(), wkbs.size());
 
@@ -500,6 +504,10 @@ TEST_F(RTreeIndexTest, Build_Upload_Load_LargeDataset) {
 
     nlohmann::json build_cfg;
     build_cfg["insert_files"] = std::vector<std::string>{remote_file};
+    build_cfg["fillFactor"] = 0.8;
+    build_cfg["indexCapacity"] = 50;
+    build_cfg["leafCapacity"] = 50;
+    build_cfg["rv"] = "RSTAR";
     rtree.Build(build_cfg);
 
     ASSERT_EQ(rtree.Count(), static_cast<int64_t>(N));
@@ -550,6 +558,10 @@ TEST_F(RTreeIndexTest, Build_BulkLoad_Nulls_And_BadWKB) {
 
     nlohmann::json build_cfg;
     build_cfg["insert_files"] = std::vector<std::string>{remote_file};
+    build_cfg["fillFactor"] = 0.8;
+    build_cfg["indexCapacity"] = 50;
+    build_cfg["leafCapacity"] = 50;
+    build_cfg["rv"] = "RSTAR";
     rtree.Build(build_cfg);
 
     // expect: 3 geometries (0, 2, 4) are valid and parsable, 1st geometry is marked null and skipped, 3rd geometry is bad WKB and skipped
@@ -788,6 +800,10 @@ TEST_F(RTreeIndexTest, GIS_Index_Exact_Filtering) {
     milvus::index::RTreeIndex<std::string> rtree_build(fm_ctx);
     nlohmann::json build_cfg;
     build_cfg["insert_files"] = std::vector<std::string>{remote_file};
+    build_cfg["fillFactor"] = 0.8;
+    build_cfg["indexCapacity"] = 50;
+    build_cfg["leafCapacity"] = 50;
+    build_cfg["rv"] = "RSTAR";
     rtree_build.Build(build_cfg);
     auto stats = rtree_build.Upload({});
 

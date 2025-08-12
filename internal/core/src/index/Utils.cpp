@@ -253,11 +253,11 @@ GetIndexMetaFromConfig(const Config& config) {
 
 double
 GetFillFactorFromConfig(const Config& config) {
-    auto fill_factor = GetValueFromConfig<std::string>(config, FILL_FACTOR_KEY);
+    auto fill_factor = GetValueFromConfig<double>(config, FILL_FACTOR_KEY);
     AssertInfo(fill_factor.has_value(),
                "fill factor not exist in index config");
     try {
-        return (std::stod(fill_factor.value()));
+        return (fill_factor.value());
     } catch (const std::logic_error& e) {
         auto err_message = fmt::format("invalided fill factor:{}, error:{}",
                                        fill_factor.value(),
@@ -270,11 +270,11 @@ GetFillFactorFromConfig(const Config& config) {
 uint32_t
 GetIndexCapacityFromConfig(const Config& config) {
     auto index_capacity =
-        GetValueFromConfig<std::string>(config, INDEX_CAPACITY_KEY);
+        GetValueFromConfig<uint32_t>(config, INDEX_CAPACITY_KEY);
     AssertInfo(index_capacity.has_value(),
                "index capacity not exist in index config");
     try {
-        return (std::stoi(index_capacity.value()));
+        return (index_capacity.value());
     } catch (const std::logic_error& e) {
         auto err_message = fmt::format("invalided index capacity:{}, error:{}",
                                        index_capacity.value(),
@@ -287,11 +287,11 @@ GetIndexCapacityFromConfig(const Config& config) {
 uint32_t
 GetLeafCapacityFromConfig(const Config& config) {
     auto leaf_capacity =
-        GetValueFromConfig<std::string>(config, LEAF_CAPACITY_KEY);
+        GetValueFromConfig<uint32_t>(config, LEAF_CAPACITY_KEY);
     AssertInfo(leaf_capacity.has_value(),
                "leaf capacity not exist in index config");
     try {
-        return (std::stoi(leaf_capacity.value()));
+        return (leaf_capacity.value());
     } catch (const std::logic_error& e) {
         auto err_message = fmt::format("invalided leaf capacity:{}, error:{}",
                                        leaf_capacity.value(),
