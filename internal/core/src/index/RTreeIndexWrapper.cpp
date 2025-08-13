@@ -379,9 +379,6 @@ RTreeIndexWrapper::query_candidates(proto::plan::GISFunctionFilterExpr_GISOp op,
 
     // Perform query based on operation type
     switch (op) {
-        case proto::plan::GISFunctionFilterExpr_GISOp_Contains:
-            rtree_->containsWhatQuery(query_region, visitor);
-            break;
         default:
             // For all GIS operations, we use intersection query as coarse filtering
             // The exact geometric relationship will be checked in the refinement phase

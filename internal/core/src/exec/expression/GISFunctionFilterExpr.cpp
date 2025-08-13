@@ -156,119 +156,145 @@ PhyGISFunctionFilterExpr::EvalForIndexSegment() {
     ds->Set(milvus::index::OPERATOR_TYPE, expr_->op_);
     ds->Set(milvus::index::MATCH_VALUE, expr_->geometry_.to_wkb_string());
 
+    /* ------------------------------------------------------------------
+     * Prefetch: if coarse results are not cached yet, run a single R-Tree
+     * query for all index chunks and cache their coarse bitmaps.
+     * ------------------------------------------------------------------*/
+    if (!coarse_cached_) {
+        coarse_cache_.resize(num_index_chunk_);
+        coarse_valid_cache_.resize(num_index_chunk_);
+
+        for (size_t cid = 0; cid < num_index_chunk_; ++cid) {
+            const Index& idx_ref =
+                segment_->chunk_scalar_index<std::string>(field_id_, cid);
+            auto* idx_ptr = const_cast<Index*>(&idx_ref);
+
+            auto coarse = idx_ptr->Query(ds);
+            coarse_cache_[cid] = std::move(coarse);
+
+            auto valid = idx_ptr->IsNotNull();
+            coarse_valid_cache_[cid] = std::move(valid);
+        }
+        coarse_cached_ = true;
+    }
+
     TargetBitmap batch_result;
     TargetBitmap batch_valid;
     int processed_rows = 0;
 
-    for (size_t i = current_index_chunk_; i < num_index_chunk_; i++) {
-        // 1) fetch index for this chunk and run coarse query
-        const Index& index_ref =
-            segment_->chunk_scalar_index<std::string>(field_id_, i);
-        Index* index_ptr = const_cast<Index*>(&index_ref);
-        auto coarse = index_ptr->Query(ds);
-        auto chunk_valid = index_ptr->IsNotNull();
+    for (size_t i = current_index_chunk_; i < num_index_chunk_; ++i) {
+        // 1) Build and cache refined bitmap for this chunk (coarse + exact)
+        if (cached_index_chunk_id_ != static_cast<int64_t>(i)) {
+            // Reuse segment-level coarse cache directly
+            auto& coarse = coarse_cache_[i];
+            auto& chunk_valid = coarse_valid_cache_[i];
 
-        // 2) exact refinement on candidates using raw geometry
-        TargetBitmap refined(coarse.size());
+            // Exact refinement
+            TargetBitmap refined(coarse.size());
+            const bool is_sealed = segment_->type() == SegmentType::Sealed;
 
-        // Choose underlying storage type for this segment
-        const bool is_sealed = segment_->type() == SegmentType::Sealed;
-        if (is_sealed) {
-            // sealed: std::string_view views
-            auto [views, valid_vec] =
-                segment_->chunk_view<std::string_view>(field_id_, i);
-            for (size_t pos = 0; pos < coarse.size(); ++pos) {
-                if (!coarse[pos]) {
-                    continue;
+            if (is_sealed) {
+                auto [views, valid_vec] =
+                    segment_->chunk_view<std::string_view>(field_id_, i);
+                for (size_t pos = 0; pos < coarse.size(); ++pos) {
+                    if (!coarse[pos])
+                        continue;
+                    if (!valid_vec.empty() && !valid_vec[pos])
+                        continue;
+
+                    const auto& wkb_view = views[pos];
+                    Geometry left(wkb_view.data(), wkb_view.size(), false);
+                    bool ok = false;
+                    switch (expr_->op_) {
+                        case proto::plan::GISFunctionFilterExpr_GISOp_Equals:
+                            ok = left.equals(expr_->geometry_);
+                            break;
+                        case proto::plan::GISFunctionFilterExpr_GISOp_Touches:
+                            ok = left.touches(expr_->geometry_);
+                            break;
+                        case proto::plan::GISFunctionFilterExpr_GISOp_Overlaps:
+                            ok = left.overlaps(expr_->geometry_);
+                            break;
+                        case proto::plan::GISFunctionFilterExpr_GISOp_Crosses:
+                            ok = left.crosses(expr_->geometry_);
+                            break;
+                        case proto::plan::GISFunctionFilterExpr_GISOp_Contains:
+                            ok = left.contains(expr_->geometry_);
+                            break;
+                        case proto::plan::
+                            GISFunctionFilterExpr_GISOp_Intersects:
+                            ok = left.intersects(expr_->geometry_);
+                            break;
+                        case proto::plan::GISFunctionFilterExpr_GISOp_Within:
+                            ok = left.within(expr_->geometry_);
+                            break;
+                        default:
+                            PanicInfo(NotImplemented,
+                                      "unknown GIS op : {}",
+                                      expr_->op_);
+                    }
+                    if (ok) {
+                        refined.set(pos);
+                    }
                 }
-                // optionally also check nulls
-                if (!valid_vec.empty() && !valid_vec[pos]) {
-                    continue;
-                }
-                const auto& wkb_view = views[pos];
-                Geometry left(wkb_view.data(), wkb_view.size());
-                bool ok = false;
-                switch (expr_->op_) {
-                    case proto::plan::GISFunctionFilterExpr_GISOp_Equals:
-                        ok = left.equals(expr_->geometry_);
-                        break;
-                    case proto::plan::GISFunctionFilterExpr_GISOp_Touches:
-                        ok = left.touches(expr_->geometry_);
-                        break;
-                    case proto::plan::GISFunctionFilterExpr_GISOp_Overlaps:
-                        ok = left.overlaps(expr_->geometry_);
-                        break;
-                    case proto::plan::GISFunctionFilterExpr_GISOp_Crosses:
-                        ok = left.crosses(expr_->geometry_);
-                        break;
-                    case proto::plan::GISFunctionFilterExpr_GISOp_Contains:
-                        ok = left.contains(expr_->geometry_);
-                        break;
-                    case proto::plan::GISFunctionFilterExpr_GISOp_Intersects:
-                        ok = left.intersects(expr_->geometry_);
-                        break;
-                    case proto::plan::GISFunctionFilterExpr_GISOp_Within:
-                        ok = left.within(expr_->geometry_);
-                        break;
-                    default:
-                        PanicInfo(
-                            NotImplemented, "unknown GIS op : {}", expr_->op_);
-                }
-                if (ok) {
-                    refined.set(pos);
+            } else {  // Growing segment
+                auto span = segment_->chunk_data<std::string>(field_id_, i);
+                for (size_t pos = 0; pos < coarse.size(); ++pos) {
+                    if (!coarse[pos])
+                        continue;
+
+                    const auto& wkb = span[pos];
+                    Geometry left(wkb.data(), wkb.size(), false);
+                    bool ok = false;
+                    switch (expr_->op_) {
+                        case proto::plan::GISFunctionFilterExpr_GISOp_Equals:
+                            ok = left.equals(expr_->geometry_);
+                            break;
+                        case proto::plan::GISFunctionFilterExpr_GISOp_Touches:
+                            ok = left.touches(expr_->geometry_);
+                            break;
+                        case proto::plan::GISFunctionFilterExpr_GISOp_Overlaps:
+                            ok = left.overlaps(expr_->geometry_);
+                            break;
+                        case proto::plan::GISFunctionFilterExpr_GISOp_Crosses:
+                            ok = left.crosses(expr_->geometry_);
+                            break;
+                        case proto::plan::GISFunctionFilterExpr_GISOp_Contains:
+                            ok = left.contains(expr_->geometry_);
+                            break;
+                        case proto::plan::
+                            GISFunctionFilterExpr_GISOp_Intersects:
+                            ok = left.intersects(expr_->geometry_);
+                            break;
+                        case proto::plan::GISFunctionFilterExpr_GISOp_Within:
+                            ok = left.within(expr_->geometry_);
+                            break;
+                        default:
+                            PanicInfo(NotImplemented,
+                                      "unknown GIS op : {}",
+                                      expr_->op_);
+                    }
+                    if (ok) {
+                        refined.set(pos);
+                    }
                 }
             }
-        } else {
-            // growing: std::string values
-            auto span = segment_->chunk_data<std::string>(field_id_, i);
-            for (size_t pos = 0; pos < coarse.size(); ++pos) {
-                if (!coarse[pos]) {
-                    continue;
-                }
-                const auto& wkb = span[pos];
-                Geometry left(wkb.data(), wkb.size());
-                bool ok = false;
-                switch (expr_->op_) {
-                    case proto::plan::GISFunctionFilterExpr_GISOp_Equals:
-                        ok = left.equals(expr_->geometry_);
-                        break;
-                    case proto::plan::GISFunctionFilterExpr_GISOp_Touches:
-                        ok = left.touches(expr_->geometry_);
-                        break;
-                    case proto::plan::GISFunctionFilterExpr_GISOp_Overlaps:
-                        ok = left.overlaps(expr_->geometry_);
-                        break;
-                    case proto::plan::GISFunctionFilterExpr_GISOp_Crosses:
-                        ok = left.crosses(expr_->geometry_);
-                        break;
-                    case proto::plan::GISFunctionFilterExpr_GISOp_Contains:
-                        ok = left.contains(expr_->geometry_);
-                        break;
-                    case proto::plan::GISFunctionFilterExpr_GISOp_Intersects:
-                        ok = left.intersects(expr_->geometry_);
-                        break;
-                    case proto::plan::GISFunctionFilterExpr_GISOp_Within:
-                        ok = left.within(expr_->geometry_);
-                        break;
-                    default:
-                        PanicInfo(
-                            NotImplemented, "unknown GIS op : {}", expr_->op_);
-                }
-                if (ok) {
-                    refined.set(pos);
-                }
-            }
+
+            // Cache refined result for reuse by subsequent batches
+            cached_index_chunk_id_ = i;
+            cached_index_chunk_res_ = std::move(refined);
+            // No need to copy valid bitmap into member; use coarse_valid_cache_[i] directly later
         }
 
-        // 3) append this chunk's refined result to batch result according to batch window
-        auto data_pos =
-            i == current_index_chunk_ ? current_index_chunk_pos_ : 0;
-        auto size = std::min(
-            std::min(size_per_chunk_ - data_pos, batch_size_ - processed_rows),
-            int64_t(refined.size()));
+        // 2) Append this chunk's cached results into current batch window
+        const auto& chunk_valid_ref = coarse_valid_cache_[i];
 
-        batch_result.append(refined, data_pos, size);
-        batch_valid.append(chunk_valid, data_pos, size);
+        auto size = ProcessIndexOneChunk(batch_result,
+                                         batch_valid,
+                                         i,
+                                         cached_index_chunk_res_,
+                                         chunk_valid_ref,
+                                         processed_rows);
 
         if (processed_rows + size >= batch_size_) {
             current_index_chunk_ = i;
