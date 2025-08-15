@@ -12,11 +12,11 @@
 #pragma once
 
 #include <memory>
+#include <shared_mutex>
 #include <string>
 #include <vector>
 #include "ogr_geometry.h"
 #include "spatialindex/SpatialIndex.h"
-#include "common/Types.h"
 #include "pb/plan.pb.h"
 
 // Forward declaration to avoid pulling heavy field data headers here
@@ -135,6 +135,9 @@ class RTreeIndexWrapper {
     // Flag to guard against repeated invocations which could otherwise attempt to release resources multiple times (e.g. BuildWithRawDataForUT() calls finish(), and Upload() may call it again).
     bool finished_ = false;
     SpatialIndex::id_type index_id_ = 0;  // persisted to meta for reliable load
+
+    // Serialize access to rtree_ and storage_manager_ as libspatialindex is not guaranteed to be thread-safe.
+    mutable std::shared_mutex rtree_mutex_;
 
     // R-Tree parameters
     double fill_factor_ = 0.8;

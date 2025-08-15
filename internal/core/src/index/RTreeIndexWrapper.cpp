@@ -15,6 +15,8 @@
 #include "pb/plan.pb.h"
 #include <filesystem>
 #include <fstream>
+#include <chrono>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include "common/FieldDataInterface.h"
 
@@ -75,6 +77,7 @@ RTreeIndexWrapper::add_geometry(const uint8_t* wkb_data,
                                 size_t len,
                                 int64_t row_offset) {
     AssertInfo(is_build_mode_, "Cannot add geometry in load mode");
+    std::unique_lock<std::shared_mutex> guard(rtree_mutex_);
     // Lazily create the R-Tree for dynamic insertion if not present yet
     if (rtree_ == nullptr) {
         SpatialIndex::id_type index_id;
@@ -237,6 +240,7 @@ RTreeIndexWrapper::bulk_load_from_field_data(
     AssertInfo(rtree_ == nullptr,
                "R-Tree already initialized; bulk load requires a fresh tree");
 
+    std::unique_lock<std::shared_mutex> guard(rtree_mutex_);
     BulkLoadDataStream stream(field_datas, nullable);
     SpatialIndex::id_type index_id;
     try {
@@ -265,6 +269,7 @@ RTreeIndexWrapper::finish() {
     // Guard against repeated invocations which could otherwise attempt to
     // release resources multiple times (e.g. BuildWithRawDataForUT() calls
     // finish(), and Upload() may call it again).
+    std::unique_lock<std::shared_mutex> guard(rtree_mutex_);
     if (finished_) {
         LOG_DEBUG("RTreeIndexWrapper::finish() called more than once, skip.");
         return;
@@ -323,6 +328,7 @@ void
 RTreeIndexWrapper::load() {
     AssertInfo(!is_build_mode_, "Cannot load in build mode");
 
+    std::unique_lock<std::shared_mutex> guard(rtree_mutex_);
     try {
         // Load storage manager
         storage_manager_ = std::shared_ptr<SpatialIndex::IStorageManager>(
@@ -382,7 +388,20 @@ RTreeIndexWrapper::query_candidates(proto::plan::GISFunctionFilterExpr_GISOp op,
         default:
             // For all GIS operations, we use intersection query as coarse filtering
             // The exact geometric relationship will be checked in the refinement phase
-            rtree_->intersectsWithQuery(query_region, visitor);
+            auto t0 = std::chrono::high_resolution_clock::now();
+            LOG_INFO("R-Tree query start");
+            {
+                std::unique_lock<std::shared_mutex> guard(rtree_mutex_);
+                rtree_->intersectsWithQuery(query_region, visitor);
+            }
+            auto t1 = std::chrono::high_resolution_clock::now();
+            auto elapsed_us =
+                std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0)
+                    .count();
+            LOG_INFO("R-Tree query done, candidates = {}, cost = {} us",
+                     candidate_offsets.size(),
+                     elapsed_us);
+
             break;
     }
 

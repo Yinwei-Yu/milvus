@@ -167,7 +167,9 @@ PhyGISFunctionFilterExpr::EvalForIndexSegment() {
         auto* idx_ptr = const_cast<Index*>(&idx_ref);
 
         {
+            LOG_INFO("Query segment_id: {}", segment_->get_segment_id());
             auto tmp = idx_ptr->Query(ds);
+            LOG_INFO("Query done: segment_id: {}", segment_->get_segment_id());
             coarse_global_ = std::move(tmp);
         }
         {
@@ -182,69 +184,75 @@ PhyGISFunctionFilterExpr::EvalForIndexSegment() {
     TargetBitmap batch_valid;
     int processed_rows = 0;
 
+    auto t0 = std::chrono::high_resolution_clock::now();
     for (size_t i = current_index_chunk_; i < num_index_chunk_; ++i) {
         // 1) Build and cache refined bitmap for this chunk (coarse + exact)
         if (cached_index_chunk_id_ != static_cast<int64_t>(i)) {
-            // Reuse segment-level coarse bitmap directly (same for all chunks)
-            auto& coarse = this->coarse_global_;
-            auto& chunk_valid = this->coarse_valid_global_;
-
+            // Reuse segment-level coarse cache directly
+            auto& coarse = coarse_global_;
+            auto& chunk_valid = coarse_valid_global_;
             // Exact refinement
             TargetBitmap refined(coarse.size());
             const bool is_sealed = segment_->type() == SegmentType::Sealed;
-
             if (is_sealed) {
-                auto [views, valid_vec] =
-                    segment_->chunk_view<std::string_view>(field_id_, i);
-
                 // Align global coarse bitmap positions with per-chunk local views
-                const auto start_pos =
-                    segment_->num_rows_until_chunk(field_id_, i);
-                const auto chunk_rows = views.size();
-                const auto max_local = std::min<size_t>(
-                    chunk_rows,
-                    coarse.size() > start_pos ? coarse.size() - start_pos : 0);
-
-                for (size_t local = 0; local < max_local; ++local) {
-                    const size_t pos = start_pos + local;
-                    if (!coarse[pos])
-                        continue;
-                    if (!valid_vec.empty() && !valid_vec[local])
-                        continue;
-
-                    const auto& wkb_view = views[local];
-                    Geometry left(wkb_view.data(), wkb_view.size(), false);
-                    bool ok = false;
-                    switch (expr_->op_) {
-                        case proto::plan::GISFunctionFilterExpr_GISOp_Equals:
-                            ok = left.equals(expr_->geometry_);
-                            break;
-                        case proto::plan::GISFunctionFilterExpr_GISOp_Touches:
-                            ok = left.touches(expr_->geometry_);
-                            break;
-                        case proto::plan::GISFunctionFilterExpr_GISOp_Overlaps:
-                            ok = left.overlaps(expr_->geometry_);
-                            break;
-                        case proto::plan::GISFunctionFilterExpr_GISOp_Crosses:
-                            ok = left.crosses(expr_->geometry_);
-                            break;
-                        case proto::plan::GISFunctionFilterExpr_GISOp_Contains:
-                            ok = left.contains(expr_->geometry_);
-                            break;
-                        case proto::plan::
-                            GISFunctionFilterExpr_GISOp_Intersects:
-                            ok = left.intersects(expr_->geometry_);
-                            break;
-                        case proto::plan::GISFunctionFilterExpr_GISOp_Within:
-                            ok = left.within(expr_->geometry_);
-                            break;
-                        default:
-                            PanicInfo(NotImplemented,
-                                      "unknown GIS op : {}",
-                                      expr_->op_);
-                    }
-                    if (ok) {
-                        refined.set(pos);
+                auto num_data_chunks = segment_->num_chunk_data(field_id_);
+                for (int64_t cid = 0; cid < num_data_chunks; ++cid) {
+                    auto [views, valid_vec] =
+                        segment_->chunk_view<std::string_view>(field_id_, cid);
+                    const auto start_pos =
+                        segment_->num_rows_until_chunk(field_id_, cid);
+                    const auto chunk_rows = views.size();
+                    const auto max_local = std::min<size_t>(
+                        chunk_rows,
+                        coarse.size() > start_pos ? coarse.size() - start_pos
+                                                  : 0);
+                    for (size_t local = 0; local < max_local; ++local) {
+                        const size_t pos = start_pos + local;
+                        if (!coarse[pos])
+                            continue;
+                        if (!valid_vec.empty() && !valid_vec[local])
+                            continue;
+                        const auto& wkb_view = views[local];
+                        Geometry left(wkb_view.data(), wkb_view.size(), false);
+                        bool ok = false;
+                        switch (expr_->op_) {
+                            case proto::plan::
+                                GISFunctionFilterExpr_GISOp_Equals:
+                                ok = left.equals(expr_->geometry_);
+                                break;
+                            case proto::plan::
+                                GISFunctionFilterExpr_GISOp_Touches:
+                                ok = left.touches(expr_->geometry_);
+                                break;
+                            case proto::plan::
+                                GISFunctionFilterExpr_GISOp_Overlaps:
+                                ok = left.overlaps(expr_->geometry_);
+                                break;
+                            case proto::plan::
+                                GISFunctionFilterExpr_GISOp_Crosses:
+                                ok = left.crosses(expr_->geometry_);
+                                break;
+                            case proto::plan::
+                                GISFunctionFilterExpr_GISOp_Contains:
+                                ok = left.contains(expr_->geometry_);
+                                break;
+                            case proto::plan::
+                                GISFunctionFilterExpr_GISOp_Intersects:
+                                ok = left.intersects(expr_->geometry_);
+                                break;
+                            case proto::plan::
+                                GISFunctionFilterExpr_GISOp_Within:
+                                ok = left.within(expr_->geometry_);
+                                break;
+                            default:
+                                PanicInfo(NotImplemented,
+                                          "unknown GIS op : {}",
+                                          expr_->op_);
+                        }
+                        if (ok) {
+                            refined.set(pos);
+                        }
                     }
                 }
             } else {  // Growing segment
@@ -324,7 +332,13 @@ PhyGISFunctionFilterExpr::EvalForIndexSegment() {
         }
         processed_rows += size;
     }
-
+    auto t1 = std::chrono::high_resolution_clock::now();
+    auto elapsed_us =
+        std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+    LOG_INFO(
+        "PhyGISFunctionFilterExpr::EvalForIndexSegment query done, cost = {} "
+        "us",
+        elapsed_us);
     return std::make_shared<ColumnVector>(std::move(batch_result),
                                           std::move(batch_valid));
 }
