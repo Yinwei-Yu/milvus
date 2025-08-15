@@ -18,6 +18,7 @@
 #include "spatialindex/SpatialIndex.h"
 #include "common/Types.h"
 #include "pb/plan.pb.h"
+#include <folly/SharedMutex.h>
 
 // Forward declaration to avoid pulling heavy field data headers here
 namespace milvus {
@@ -143,6 +144,9 @@ class RTreeIndexWrapper {
     uint32_t dimension_ = 2;
     SpatialIndex::RTree::RTreeVariant rtree_variant_ =
         SpatialIndex::RTree::RV_RSTAR;
+
+    // Thread safety: protects rtree_ and related operations
+    mutable folly::SharedMutexWritePriority rtree_mutex_;
 };
 
 }  // namespace milvus::index

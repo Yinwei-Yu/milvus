@@ -167,7 +167,14 @@ PhyGISFunctionFilterExpr::EvalForIndexSegment() {
         auto* idx_ptr = const_cast<Index*>(&idx_ref);
 
         {
+            LOG_INFO("LiYinwei:Query segment id {} start",
+                     segment_->get_segment_id());
+            LOG_INFO("LiYinwei:Query op {}",
+                     ds->Get<proto::plan::GISFunctionFilterExpr_GISOp>(
+                         milvus::index::OPERATOR_TYPE));
             auto tmp = idx_ptr->Query(ds);
+            LOG_INFO("LiYinwei:Query segment id {} end",
+                     segment_->get_segment_id());
             coarse_global_ = std::move(tmp);
         }
         {
@@ -181,8 +188,8 @@ PhyGISFunctionFilterExpr::EvalForIndexSegment() {
     TargetBitmap batch_result;
     TargetBitmap batch_valid;
     int processed_rows = 0;
-
-    for (size_t i = current_index_chunk_; i < num_index_chunk_; ++i) {
+    auto num_chunk_data = segment_->num_chunk_data(field_id_);
+    for (size_t i = current_index_chunk_; i < num_chunk_data; ++i) {
         // 1) Build and cache refined bitmap for this chunk (coarse + exact)
         if (cached_index_chunk_id_ != static_cast<int64_t>(i)) {
             // Reuse segment-level coarse bitmap directly (same for all chunks)

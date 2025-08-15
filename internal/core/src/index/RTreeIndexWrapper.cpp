@@ -74,6 +74,9 @@ void
 RTreeIndexWrapper::add_geometry(const uint8_t* wkb_data,
                                 size_t len,
                                 int64_t row_offset) {
+    // Acquire write lock to protect rtree_ modification
+    folly::SharedMutexWritePriority::WriteHolder lock(rtree_mutex_);
+
     AssertInfo(is_build_mode_, "Cannot add geometry in load mode");
     // Lazily create the R-Tree for dynamic insertion if not present yet
     if (rtree_ == nullptr) {
@@ -232,6 +235,9 @@ void
 RTreeIndexWrapper::bulk_load_from_field_data(
     const std::vector<std::shared_ptr<::milvus::FieldDataBase>>& field_datas,
     bool nullable) {
+    // Acquire write lock to protect rtree_ creation and modification
+    folly::SharedMutexWritePriority::WriteHolder lock(rtree_mutex_);
+
     AssertInfo(is_build_mode_, "Cannot bulk load in load mode");
     AssertInfo(storage_manager_ != nullptr, "Storage manager is null");
     AssertInfo(rtree_ == nullptr,
@@ -262,6 +268,9 @@ RTreeIndexWrapper::bulk_load_from_field_data(
 
 void
 RTreeIndexWrapper::finish() {
+    // Acquire write lock to protect rtree_ modification and cleanup
+    folly::SharedMutexWritePriority::WriteHolder lock(rtree_mutex_);
+
     // Guard against repeated invocations which could otherwise attempt to
     // release resources multiple times (e.g. BuildWithRawDataForUT() calls
     // finish(), and Upload() may call it again).
@@ -321,6 +330,9 @@ RTreeIndexWrapper::finish() {
 
 void
 RTreeIndexWrapper::load() {
+    // Acquire write lock to protect rtree_ initialization during loading
+    folly::SharedMutexWritePriority::WriteHolder lock(rtree_mutex_);
+
     AssertInfo(!is_build_mode_, "Cannot load in build mode");
 
     try {
@@ -361,6 +373,9 @@ void
 RTreeIndexWrapper::query_candidates(proto::plan::GISFunctionFilterExpr_GISOp op,
                                     const OGRGeometry& query_geom,
                                     std::vector<int64_t>& candidate_offsets) {
+    // Acquire read lock to protect rtree_ access during query
+    folly::SharedMutexWritePriority::ReadHolder lock(rtree_mutex_);
+
     AssertInfo(rtree_ != nullptr, "R-Tree index not initialized");
 
     candidate_offsets.clear();
@@ -410,6 +425,9 @@ RTreeIndexWrapper::get_bounding_box(const OGRGeometry* geom,
 
 int64_t
 RTreeIndexWrapper::count() const {
+    // Acquire read lock to protect rtree_ access during count operation
+    folly::SharedMutexWritePriority::ReadHolder lock(rtree_mutex_);
+
     if (rtree_ == nullptr) {
         return 0;
     }
