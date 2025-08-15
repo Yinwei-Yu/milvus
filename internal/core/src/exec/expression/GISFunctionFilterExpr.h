@@ -64,9 +64,9 @@ class PhyGISFunctionFilterExpr : public SegmentExpr {
      */
     bool coarse_cached_ =
         false;  // whether coarse results have been prefetched once
-    std::vector<TargetBitmap>
-        coarse_cache_;  // per-chunk coarse candidate bitmap
-    std::vector<TargetBitmap> coarse_valid_cache_;  // per-chunk not-null bitmap
+    TargetBitmap coarse_global_;  // global coarse bitmap (segment-level)
+    TargetBitmap
+        coarse_valid_global_;  // global not-null bitmap (segment-level)
 };
 }  //namespace exec
 }  // namespace milvus

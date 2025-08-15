@@ -161,20 +161,20 @@ PhyGISFunctionFilterExpr::EvalForIndexSegment() {
      * query for all index chunks and cache their coarse bitmaps.
      * ------------------------------------------------------------------*/
     if (!coarse_cached_) {
-        coarse_cache_.resize(num_index_chunk_);
-        coarse_valid_cache_.resize(num_index_chunk_);
+        // Query segment-level R-Tree index **once** since each chunk shares the same index
+        const Index& idx_ref =
+            segment_->chunk_scalar_index<std::string>(field_id_, 0);
+        auto* idx_ptr = const_cast<Index*>(&idx_ref);
 
-        for (size_t cid = 0; cid < num_index_chunk_; ++cid) {
-            const Index& idx_ref =
-                segment_->chunk_scalar_index<std::string>(field_id_, cid);
-            auto* idx_ptr = const_cast<Index*>(&idx_ref);
-
-            auto coarse = idx_ptr->Query(ds);
-            coarse_cache_[cid] = std::move(coarse);
-
-            auto valid = idx_ptr->IsNotNull();
-            coarse_valid_cache_[cid] = std::move(valid);
+        {
+            auto tmp = idx_ptr->Query(ds);
+            coarse_global_ = std::move(tmp);
         }
+        {
+            auto tmp_valid = idx_ptr->IsNotNull();
+            coarse_valid_global_ = std::move(tmp_valid);
+        }
+
         coarse_cached_ = true;
     }
 
@@ -185,9 +185,9 @@ PhyGISFunctionFilterExpr::EvalForIndexSegment() {
     for (size_t i = current_index_chunk_; i < num_index_chunk_; ++i) {
         // 1) Build and cache refined bitmap for this chunk (coarse + exact)
         if (cached_index_chunk_id_ != static_cast<int64_t>(i)) {
-            // Reuse segment-level coarse cache directly
-            auto& coarse = coarse_cache_[i];
-            auto& chunk_valid = coarse_valid_cache_[i];
+            // Reuse segment-level coarse bitmap directly (same for all chunks)
+            auto& coarse = this->coarse_global_;
+            auto& chunk_valid = this->coarse_valid_global_;
 
             // Exact refinement
             TargetBitmap refined(coarse.size());
@@ -196,13 +196,23 @@ PhyGISFunctionFilterExpr::EvalForIndexSegment() {
             if (is_sealed) {
                 auto [views, valid_vec] =
                     segment_->chunk_view<std::string_view>(field_id_, i);
-                for (size_t pos = 0; pos < coarse.size(); ++pos) {
+
+                // Align global coarse bitmap positions with per-chunk local views
+                const auto start_pos =
+                    segment_->num_rows_until_chunk(field_id_, i);
+                const auto chunk_rows = views.size();
+                const auto max_local = std::min<size_t>(
+                    chunk_rows,
+                    coarse.size() > start_pos ? coarse.size() - start_pos : 0);
+
+                for (size_t local = 0; local < max_local; ++local) {
+                    const size_t pos = start_pos + local;
                     if (!coarse[pos])
                         continue;
-                    if (!valid_vec.empty() && !valid_vec[pos])
+                    if (!valid_vec.empty() && !valid_vec[local])
                         continue;
 
-                    const auto& wkb_view = views[pos];
+                    const auto& wkb_view = views[local];
                     Geometry left(wkb_view.data(), wkb_view.size(), false);
                     bool ok = false;
                     switch (expr_->op_) {
@@ -239,11 +249,20 @@ PhyGISFunctionFilterExpr::EvalForIndexSegment() {
                 }
             } else {  // Growing segment
                 auto span = segment_->chunk_data<std::string>(field_id_, i);
-                for (size_t pos = 0; pos < coarse.size(); ++pos) {
+
+                const auto start_pos =
+                    segment_->num_rows_until_chunk(field_id_, i);
+                const auto chunk_rows = span.row_count();
+                const auto max_local = std::min<size_t>(
+                    chunk_rows,
+                    coarse.size() > start_pos ? coarse.size() - start_pos : 0);
+
+                for (size_t local = 0; local < max_local; ++local) {
+                    const size_t pos = start_pos + local;
                     if (!coarse[pos])
                         continue;
 
-                    const auto& wkb = span[pos];
+                    const auto& wkb = span[local];
                     Geometry left(wkb.data(), wkb.size(), false);
                     bool ok = false;
                     switch (expr_->op_) {
@@ -287,7 +306,7 @@ PhyGISFunctionFilterExpr::EvalForIndexSegment() {
         }
 
         // 2) Append this chunk's cached results into current batch window
-        const auto& chunk_valid_ref = coarse_valid_cache_[i];
+        const auto& chunk_valid_ref = this->coarse_valid_global_;
 
         auto size = ProcessIndexOneChunk(batch_result,
                                          batch_valid,
