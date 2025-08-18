@@ -321,7 +321,14 @@ PhyGISFunctionFilterExpr::EvalForIndexSegment() {
                                          cached_index_chunk_res_,
                                          chunk_valid_ref,
                                          processed_rows);
-
+        LOG_INFO(
+            "EvalForIndexSegment loop - i: {}, "
+            "processed_rows_before_append: {}, size_from_ProcessIndexOneChunk: "
+            "{}, batch_size_: {}",
+            i,
+            processed_rows,
+            size,
+            batch_size_);
         if (processed_rows + size >= batch_size_) {
             current_index_chunk_ = i;
             current_index_chunk_pos_ = i == current_index_chunk_
@@ -330,6 +337,19 @@ PhyGISFunctionFilterExpr::EvalForIndexSegment() {
             break;
         }
         processed_rows += size;
+    }
+
+    // CRITICAL FIX: Ensure the returned ColumnVector exactly matches the real_batch_size
+    // This handles the case where the loop might have accumulated slightly more
+    // due to chunking/batching logic not perfectly aligning with `real_batch_size`.
+    if (batch_result.size() > real_batch_size) {
+        LOG_WARN(
+            "EvalForIndexSegment: Truncating batch_result from {} to "
+            "{} to match real_batch_size.",
+            batch_result.size(),
+            real_batch_size);
+        batch_result.resize(real_batch_size);
+        batch_valid.resize(real_batch_size);
     }
 
     return std::make_shared<ColumnVector>(std::move(batch_result),
