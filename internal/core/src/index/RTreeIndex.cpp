@@ -11,7 +11,6 @@
 
 #include "index/RTreeIndex.h"
 #include <boost/filesystem.hpp>
-#include <iostream>
 #include <algorithm>
 #include <cstring>
 #include "common/Slice.h"  // for INDEX_FILE_SLICE_META and Disassemble
@@ -216,7 +215,8 @@ RTreeIndex<T>::Load(milvus::tracer::TraceContext ctx, const Config& config) {
         std::make_shared<RTreeIndexWrapper>(path_, /*is_build_mode=*/false);
     wrapper_->load();
 
-    total_num_rows_ = wrapper_->count() + static_cast<int64_t>(null_offset_.size());
+    total_num_rows_ =
+        wrapper_->count() + static_cast<int64_t>(null_offset_.size());
     is_built_ = true;
 
     LOG_INFO(
@@ -231,23 +231,14 @@ RTreeIndex<T>::Build(const Config& config) {
     AssertInfo(insert_files.has_value(),
                "insert_files were empty for building RTree index");
     InitForBuildIndex();
-    auto fill_factor = GetFillFactorFromConfig(config);
-    auto index_cap = GetIndexCapacityFromConfig(config);
-    auto leaf_cap = GetLeafCapacityFromConfig(config);
-    auto variant_str =
-        GetValueFromConfig<std::string>(config, R_TREE_VARIANT_KEY)
-            .value_or("RSTAR");
-    wrapper_->set_fill_factor(fill_factor);
-    wrapper_->set_index_capacity(index_cap);
-    wrapper_->set_leaf_capacity(leaf_cap);
-    wrapper_->set_rtree_variant(variant_str);
 
     // load raw WKB data into memory
     auto field_datas =
         mem_file_manager_->CacheRawDataToMemory(insert_files.value());
     BuildWithFieldData(field_datas);
     // after build, mark built
-    total_num_rows_ = wrapper_->count() + static_cast<int64_t>(null_offset_.size());
+    total_num_rows_ =
+        wrapper_->count() + static_cast<int64_t>(null_offset_.size());
     is_built_ = true;
 }
 

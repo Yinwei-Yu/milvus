@@ -198,6 +198,27 @@ PhyGISFunctionFilterExpr::EvalForIndexSegment() {
                 // Align global coarse bitmap positions with per-chunk local views
                 auto num_data_chunks = segment_->num_chunk_data(field_id_);
                 for (int64_t cid = 0; cid < num_data_chunks; ++cid) {
+                    LOG_INFO(
+                        "PhyGISFunctionFilterExpr::EvalForIndexSegment get "
+                        "chunk_view, num_chunk: {}, cid: {}",
+                        num_data_chunks,
+                        cid);
+                    FixedVector<int32_t> local_offsets;
+                    local_offsets.reserve(segment_->num_rows_until_chunk(
+                        FieldId field_id, int64_t chunk_id));  // 或粗略估计
+                    for (size_t local = 0; local < chunk_rows; ++local) {
+                        size_t pos = start + local;
+                        if (pos < coarse.size() &&
+                            coarse[pos] /* && (!nullable || valid[local]) */) {
+                            local_offsets.push_back(
+                                static_cast<int32_t>(local));
+                        }
+                    }
+
+                    auto [views, valid_vec] =
+                        segment_->get_views_by_offsets<std::string_view>(
+                            field_id_, cid, local_offsets);
+                    // 遍历 views 执行精确几何关系判断
                     auto [views, valid_vec] =
                         segment_->chunk_view<std::string_view>(field_id_, cid);
                     const auto start_pos =
