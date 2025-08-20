@@ -27,6 +27,9 @@ class FieldDataBase;
 
 namespace milvus::index {
 
+namespace bg = boost::geometry;
+namespace bgi = boost::geometry::index;
+
 /**
  * @brief Wrapper class for libspatialindex R-Tree functionality
  * 
@@ -117,15 +120,12 @@ class RTreeIndexWrapper {
 
  private:
     // Boost.Geometry types and in-memory structures
-    using Point = boost::geometry::model::
-        point<double, 2, boost::geometry::cs::cartesian>;
-    using Box = boost::geometry::model::box<Point>;
+    using Point = bg::model::point<double, 2, bg::cs::cartesian>;
+    using Box = bg::model::box<Point>;
     using Value = std::pair<Box, int64_t>;  // (MBR, row_offset)
-    using RTree =
-        boost::geometry::index::rtree<Value,
-                                      boost::geometry::index::rstar<256>>;
+    using RTree = bgi::rtree<Value, bgi::rstar<16>>;
 
-    std::unique_ptr<RTree> rtree_;
+    RTree rtree_{};
     std::vector<Value> values_;
     std::string index_path_;
     bool is_build_mode_;

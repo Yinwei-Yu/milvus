@@ -10,6 +10,7 @@
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
 #include "RTreeIndexWrapper.h"
+#include "RTreeIndexSerialization.h"
 #include "common/EasyAssert.h"
 #include "log/Log.h"
 #include "pb/plan.pb.h"
@@ -22,8 +23,6 @@
 
 namespace milvus::index {
 
-namespace bgi = boost::geometry::index;
-
 RTreeIndexWrapper::RTreeIndexWrapper(std::string& path, bool is_build_mode)
     : index_path_(path), is_build_mode_(is_build_mode) {
     if (is_build_mode_) {
@@ -33,7 +32,7 @@ RTreeIndexWrapper::RTreeIndexWrapper(std::string& path, bool is_build_mode)
             std::filesystem::create_directories(dir_path);
         }
         // Start with an empty rtree for dynamic insertions
-        rtree_ = std::make_unique<RTree>();
+        rtree_ = RTree();
     }
 }
 
@@ -45,9 +44,6 @@ RTreeIndexWrapper::add_geometry(const uint8_t* wkb_data,
                                 int64_t row_offset) {
     AssertInfo(is_build_mode_, "Cannot add geometry in load mode");
     std::unique_lock<std::shared_mutex> guard(rtree_mutex_);
-    if (!rtree_) {
-        rtree_ = std::make_unique<RTree>();
-    }
 
     // Parse WKB data to OGR geometry
     OGRGeometry* geom = nullptr;
@@ -67,7 +63,7 @@ RTreeIndexWrapper::add_geometry(const uint8_t* wkb_data,
     Box box(Point(minX, minY), Point(maxX, maxY));
     Value val(box, row_offset);
     values_.push_back(val);
-    rtree_->insert(val);
+    rtree_.insert(val);
 
     // Clean up
     OGRGeometryFactory::destroyGeometry(geom);
@@ -113,7 +109,7 @@ RTreeIndexWrapper::bulk_load_from_field_data(
         }
     }
     values_.swap(local_values);
-    rtree_ = std::make_unique<RTree>(values_.begin(), values_.end());
+    rtree_ = RTree(values_.begin(), values_.end());
     LOG_INFO("R-Tree bulk load (Boost) completed with {} entries",
              values_.size());
 }
@@ -134,41 +130,12 @@ RTreeIndexWrapper::finish() {
     // Persist to disk: write meta and binary data file
     try {
         // Write binary rtree data
-        std::ofstream data_out(index_path_ + ".bgi",
-                               std::ios::binary | std::ios::trunc);
-        if (!data_out.good()) {
-            PanicInfo(
-                ErrorCode::UnexpectedError,
-                fmt::format("Failed to open {}.bgi for writing", index_path_));
-        }
-        const char magic[6] = {'B', 'G', 'R', 'T', 'R', '1'};
-        data_out.write(magic, sizeof(magic));
-        uint64_t count = static_cast<uint64_t>(values_.size());
-        data_out.write(reinterpret_cast<const char*>(&count), sizeof(count));
-        for (const auto& v : values_) {
-            const auto& b = v.first;
-            double minx = b.min_corner().get<0>();
-            double miny = b.min_corner().get<1>();
-            double maxx = b.max_corner().get<0>();
-            double maxy = b.max_corner().get<1>();
-            data_out.write(reinterpret_cast<const char*>(&minx),
-                           sizeof(double));
-            data_out.write(reinterpret_cast<const char*>(&miny),
-                           sizeof(double));
-            data_out.write(reinterpret_cast<const char*>(&maxx),
-                           sizeof(double));
-            data_out.write(reinterpret_cast<const char*>(&maxy),
-                           sizeof(double));
-            int64_t id = v.second;
-            data_out.write(reinterpret_cast<const char*>(&id), sizeof(int64_t));
-        }
-        data_out.close();
+        RTreeSerializer::saveBinary(rtree_, index_path_ + ".bgi");
 
         // Write meta json
         nlohmann::json meta;
         // index/leaf capacities are not used in Boost implementation
         meta["dimension"] = dimension_;
-        meta["bgi_file"] = std::string(index_path_ + ".bgi");
         meta["count"] = static_cast<uint64_t>(values_.size());
 
         std::ofstream ofs(index_path_ + ".meta.json", std::ios::trunc);
@@ -205,36 +172,7 @@ RTreeIndexWrapper::load() {
         }
 
         // Read binary data
-        std::ifstream data_in(index_path_ + ".bgi", std::ios::binary);
-        if (!data_in.good()) {
-            PanicInfo(
-                ErrorCode::UnexpectedError,
-                fmt::format("Failed to open {}.bgi for reading", index_path_));
-        }
-        char magic[6];
-        data_in.read(magic, sizeof(magic));
-        if (std::string(magic, sizeof(magic)) != std::string("BGRTR1", 6)) {
-            PanicInfo(ErrorCode::UnexpectedError,
-                      "Invalid R-Tree binary magic");
-        }
-        uint64_t count = 0;
-        data_in.read(reinterpret_cast<char*>(&count), sizeof(count));
-        values_.clear();
-        values_.reserve(static_cast<size_t>(count));
-        for (uint64_t i = 0; i < count; ++i) {
-            double minx, miny, maxx, maxy;
-            int64_t id;
-            data_in.read(reinterpret_cast<char*>(&minx), sizeof(double));
-            data_in.read(reinterpret_cast<char*>(&miny), sizeof(double));
-            data_in.read(reinterpret_cast<char*>(&maxx), sizeof(double));
-            data_in.read(reinterpret_cast<char*>(&maxy), sizeof(double));
-            data_in.read(reinterpret_cast<char*>(&id), sizeof(int64_t));
-            Box box(Point(minx, miny), Point(maxx, maxy));
-            values_.emplace_back(box, id);
-        }
-        data_in.close();
-
-        rtree_ = std::make_unique<RTree>(values_.begin(), values_.end());
+        RTreeSerializer::loadBinary(rtree_, index_path_ + ".bgi");
 
         LOG_INFO("R-Tree index (Boost) loaded from {}", index_path_);
     } catch (const std::exception& e) {
@@ -249,8 +187,6 @@ void
 RTreeIndexWrapper::query_candidates(proto::plan::GISFunctionFilterExpr_GISOp op,
                                     const OGRGeometry& query_geom,
                                     std::vector<int64_t>& candidate_offsets) {
-    AssertInfo(rtree_ != nullptr, "R-Tree index not initialized");
-
     candidate_offsets.clear();
 
     // Get bounding box of query geometry
@@ -261,23 +197,16 @@ RTreeIndexWrapper::query_candidates(proto::plan::GISFunctionFilterExpr_GISOp op,
     Box query_box(Point(minX, minY), Point(maxX, maxY));
 
     // Perform coarse intersection query
-    auto t0 = std::chrono::high_resolution_clock::now();
-    LOG_INFO("R-Tree query start");
     std::vector<Value> results;
     {
         std::shared_lock<std::shared_mutex> guard(rtree_mutex_);
-        rtree_->query(bgi::intersects(query_box), std::back_inserter(results));
+        rtree_.query(boost::geometry::index::intersects(query_box),
+                     std::back_inserter(results));
     }
     candidate_offsets.reserve(results.size());
     for (const auto& v : results) {
         candidate_offsets.push_back(v.second);
     }
-    auto t1 = std::chrono::high_resolution_clock::now();
-    auto elapsed_us =
-        std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
-    LOG_INFO("R-Tree query done, candidates = {}, cost = {} us",
-             candidate_offsets.size(),
-             elapsed_us);
 
     LOG_DEBUG("R-Tree query returned {} candidates for operation {}",
               candidate_offsets.size(),
@@ -303,10 +232,7 @@ RTreeIndexWrapper::get_bounding_box(const OGRGeometry* geom,
 
 int64_t
 RTreeIndexWrapper::count() const {
-    if (!rtree_) {
-        return 0;
-    }
-    return static_cast<int64_t>(rtree_->size());
+    return static_cast<int64_t>(rtree_.size());
 }
 
 // index/leaf capacity setters removed; not applicable for Boost rtree

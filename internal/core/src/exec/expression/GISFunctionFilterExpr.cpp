@@ -14,6 +14,7 @@
 #include "common/Geometry.h"
 #include "common/Types.h"
 #include "pb/plan.pb.h"
+#include "pb/schema.pb.h"
 namespace milvus {
 namespace exec {
 
@@ -167,9 +168,7 @@ PhyGISFunctionFilterExpr::EvalForIndexSegment() {
         auto* idx_ptr = const_cast<Index*>(&idx_ref);
 
         {
-            LOG_INFO("Query segment_id: {}", segment_->get_segment_id());
             auto tmp = idx_ptr->Query(ds);
-            LOG_INFO("Query done: segment_id: {}", segment_->get_segment_id());
             coarse_global_ = std::move(tmp);
         }
         {
@@ -184,7 +183,6 @@ PhyGISFunctionFilterExpr::EvalForIndexSegment() {
     TargetBitmap batch_valid;
     int processed_rows = 0;
 
-    auto t0 = std::chrono::high_resolution_clock::now();
     for (size_t i = current_index_chunk_; i < num_index_chunk_; ++i) {
         // 1) Build and cache refined bitmap for this chunk (coarse + exact)
         if (cached_index_chunk_id_ != static_cast<int64_t>(i)) {
@@ -195,48 +193,39 @@ PhyGISFunctionFilterExpr::EvalForIndexSegment() {
             TargetBitmap refined(coarse.size());
             const bool is_sealed = segment_->type() == SegmentType::Sealed;
             if (is_sealed) {
-                // Align global coarse bitmap positions with per-chunk local views
-                auto num_data_chunks = segment_->num_chunk_data(field_id_);
-                for (int64_t cid = 0; cid < num_data_chunks; ++cid) {
-                    LOG_INFO(
-                        "PhyGISFunctionFilterExpr::EvalForIndexSegment get "
-                        "chunk_view, num_chunk: {}, cid: {}",
-                        num_data_chunks,
-                        cid);
-                    FixedVector<int32_t> local_offsets;
-                    local_offsets.reserve(segment_->num_rows_until_chunk(
-                        FieldId field_id, int64_t chunk_id));  // 或粗略估计
-                    for (size_t local = 0; local < chunk_rows; ++local) {
-                        size_t pos = start + local;
-                        if (pos < coarse.size() &&
-                            coarse[pos] /* && (!nullable || valid[local]) */) {
-                            local_offsets.push_back(
-                                static_cast<int32_t>(local));
-                        }
+                // Collect all hit row offsets from coarse bitmap
+                std::vector<int64_t> hit_offsets;
+                hit_offsets.reserve(
+                    coarse.count());  // Reserve space for efficiency
+                for (size_t i = 0; i < coarse.size(); ++i) {
+                    if (coarse[i]) {
+                        hit_offsets.push_back(static_cast<int64_t>(i));
                     }
+                }
 
-                    auto [views, valid_vec] =
-                        segment_->get_views_by_offsets<std::string_view>(
-                            field_id_, cid, local_offsets);
-                    // 遍历 views 执行精确几何关系判断
-                    auto [views, valid_vec] =
-                        segment_->chunk_view<std::string_view>(field_id_, cid);
-                    const auto start_pos =
-                        segment_->num_rows_until_chunk(field_id_, cid);
-                    const auto chunk_rows = views.size();
-                    const auto max_local = std::min<size_t>(
-                        chunk_rows,
-                        coarse.size() > start_pos ? coarse.size() - start_pos
-                                                  : 0);
-                    for (size_t local = 0; local < max_local; ++local) {
-                        const size_t pos = start_pos + local;
-                        if (!coarse[pos])
+                if (!hit_offsets.empty()) {
+                    // Bulk get data for all hit rows at once
+                    auto data_array = segment_->bulk_subscript(
+                        field_id_, hit_offsets.data(), hit_offsets.size());
+
+                    // Process each hit row
+                    auto geometry_array = static_cast<
+                        const milvus::proto::schema::GeometryArray*>(
+                        &data_array->scalars().geometry_data());
+                    const auto& valid_data = data_array->valid_data();
+
+                    for (size_t i = 0; i < hit_offsets.size(); ++i) {
+                        const auto pos = hit_offsets[i];
+
+                        // Check validity if available
+                        if (!valid_data.empty() && !valid_data[i]) {
                             continue;
-                        if (!valid_vec.empty() && !valid_vec[local])
-                            continue;
-                        const auto& wkb_view = views[local];
-                        Geometry left(wkb_view.data(), wkb_view.size(), false);
+                        }
+
+                        const auto& wkb_data = geometry_array->data(i);
+                        Geometry left(wkb_data.data(), wkb_data.size(), false);
                         bool ok = false;
+
                         switch (expr_->op_) {
                             case proto::plan::
                                 GISFunctionFilterExpr_GISOp_Equals:
@@ -271,6 +260,7 @@ PhyGISFunctionFilterExpr::EvalForIndexSegment() {
                                           "unknown GIS op : {}",
                                           expr_->op_);
                         }
+
                         if (ok) {
                             refined.set(pos);
                         }
@@ -353,13 +343,6 @@ PhyGISFunctionFilterExpr::EvalForIndexSegment() {
         }
         processed_rows += size;
     }
-    auto t1 = std::chrono::high_resolution_clock::now();
-    auto elapsed_us =
-        std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
-    LOG_INFO(
-        "PhyGISFunctionFilterExpr::EvalForIndexSegment query done, cost = {} "
-        "us",
-        elapsed_us);
     return std::make_shared<ColumnVector>(std::move(batch_result),
                                           std::move(batch_valid));
 }
