@@ -6,7 +6,7 @@ class MilvusConan(ConanFile):
     settings = "os", "compiler", "build_type", "arch"
     requires = (
         "rocksdb/6.29.5@milvus/dev#b1842a53ddff60240c5282a3da498ba1",
-        "boost/1.82.0#744a17160ebb5838e9115eab4d6d0c06",
+        "boost/1.83.0@",
         "onetbb/2021.9.0#4a223ff1b4025d02f31b65aedf5e7f4a",
         "nlohmann_json/3.11.3#ffb9e9236619f1c883e36662f944345d",
         "zstd/1.5.5#34e9debe03bf0964834a09dfbc31a5dd",
