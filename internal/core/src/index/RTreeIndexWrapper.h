@@ -31,9 +31,9 @@ namespace bg = boost::geometry;
 namespace bgi = boost::geometry::index;
 
 /**
- * @brief Wrapper class for libspatialindex R-Tree functionality
+ * @brief Wrapper class for boost R-Tree functionality
  * 
- * This class provides a simplified interface to libspatialindex library,
+ * This class provides a simplified interface to boost library,
  * handling the creation, management, and querying of R-Tree spatial indexes
  * for geometric data in Milvus.
  */

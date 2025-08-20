@@ -185,11 +185,7 @@ RTreeIndex<T>::Load(milvus::tracer::TraceContext ctx, const Config& config) {
     // Pick a .dat or .idx file explicitly; avoid meta or others.
     std::string base_path;
     for (const auto& p : local_paths) {
-        if (ends_with(p, ".dat")) {
-            base_path = p.substr(0, p.size() - 4);
-            break;
-        }
-        if (ends_with(p, ".idx")) {
+        if (ends_with(p, ".bgi")) {
             base_path = p.substr(0, p.size() - 4);
             break;
         }
