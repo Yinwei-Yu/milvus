@@ -53,7 +53,7 @@ class MilvusConan(ConanFile):
         "proj/9.3.1#38e8bacd0f98467d38e20f46a085b4b3",
         "libtiff/4.6.0#32ca1d04c9f024637d49c0c2882cfdbe",
         "libgeotiff/1.7.1#0375633ef1116fc067b3773be7fd902f",
-        "geos/3.12.0#b76c27884c1fa4ee8c9e486337b7dc4e",
+        "geos/3.12.0#0b177c90c25a8ca210578fb9e2899c37",
         "gdal/3.5.3#61a42c933d3440a449cac89fd0866621",
     )
     generators = ("cmake", "cmake_find_package")
