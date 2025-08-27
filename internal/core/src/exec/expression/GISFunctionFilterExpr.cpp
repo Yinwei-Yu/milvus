@@ -10,37 +10,81 @@
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
 #include "GISFunctionFilterExpr.h"
+#include <cstdlib>
 #include "common/EasyAssert.h"
 #include "common/Geometry.h"
 #include "common/Types.h"
 #include "pb/plan.pb.h"
+#include "exec/expression/GeoSlotCache.h"  // Per-segment cache to avoid repeated WKB->Geometry conversions under sequential scans.
 namespace milvus {
 namespace exec {
 
-#define GEOMETRY_EXECUTE_SUB_BATCH_WITH_COMPARISON(_DataType, method)          \
-    auto execute_sub_batch = [](const _DataType* data,                         \
-                                const bool* valid_data,                        \
-                                const int32_t* offsets,                        \
-                                const int size,                                \
-                                TargetBitmapView res,                          \
-                                TargetBitmapView valid_res,                    \
-                                const Geometry& right_source) {                \
-        for (int i = 0; i < size; ++i) {                                       \
-            if (valid_data != nullptr && !valid_data[i]) {                     \
-                res[i] = valid_res[i] = false;                                 \
-                continue;                                                      \
-            }                                                                  \
-            res[i] =                                                           \
-                Geometry(data[i].data(), data[i].size()).method(right_source); \
-        }                                                                      \
-    };                                                                         \
-    int64_t processed_size = ProcessDataChunks<_DataType>(                     \
-        execute_sub_batch, std::nullptr_t{}, res, valid_res, right_source);    \
-    AssertInfo(processed_size == real_batch_size,                              \
-               "internal error: expr processed rows {} not equal "             \
-               "expect batch size {}",                                         \
-               processed_size,                                                 \
-               real_batch_size);                                               \
+#define GEOMETRY_EXECUTE_SUB_BATCH_WITH_COMPARISON(_DataType, method)                                               \
+    auto execute_sub_batch = [this](const _DataType* data,                                                          \
+                                    const bool* valid_data,                                                         \
+                                    const int32_t* offsets,                                                         \
+                                    const int size,                                                                 \
+                                    TargetBitmapView res,                                                           \
+                                    TargetBitmapView valid_res,                                                     \
+                                    const Geometry& right_source) {                                                 \
+        /* Unified path for string and string_view using per-chunk slot-array with CAS publication. */              \
+        auto& slot_cache = GeoSlotCacheManager::Instance().GetOrCreate(                                             \
+            this->segment_, field_id_);                                                                             \
+        if constexpr (std::is_same_v<_DataType, std::string>) {                                                     \
+            for (int i = 0; i < size; ++i) {                                                                        \
+                if (valid_data && !valid_data[i]) {                                                                 \
+                    res[i] = valid_res[i] = false;                                                                  \
+                    continue;                                                                                       \
+                }                                                                                                   \
+                Geometry tmp(data[i].data(), data[i].size());                                                       \
+                res[i] = tmp.method(right_source);                                                                  \
+            }                                                                                                       \
+        } else {                                                                                                    \
+            /* Sealed path: use a global ptr->(chunk_id, idx) index to reuse slot-array without changing inputs. */ \
+            slot_cache.EnsureSealedPtrIndexBuilt(this->segment_, field_id_);                                        \
+            for (int i = 0; i < size; ++i) {                                                                        \
+                if (valid_data != nullptr && !valid_data[i]) {                                                      \
+                    res[i] = valid_res[i] = false;                                                                  \
+                    continue;                                                                                       \
+                }                                                                                                   \
+                const void* key = static_cast<const void*>(data[i].data());                                         \
+                auto [ok, where] = slot_cache.LookupSealedPtr(key);                                                 \
+                if (!ok) {                                                                                          \
+                    Geometry tmp(data[i].data(), data[i].size());                                                   \
+                    res[i] = tmp.method(right_source);                                                              \
+                    continue;                                                                                       \
+                }                                                                                                   \
+                auto& chunk = slot_cache.GetOrCreateChunk(                                                          \
+                    this->segment_, field_id_, where.first);                                                        \
+                size_t idx = where.second;                                                                          \
+                Geometry* g = chunk.Load(idx);                                                                      \
+                if (g == nullptr) {                                                                                 \
+                    Geometry* fresh = nullptr;                                                                      \
+                    try {                                                                                           \
+                        fresh = new Geometry(data[i].data(), data[i].size());                                       \
+                    } catch (...) {                                                                                 \
+                        fresh = nullptr;                                                                            \
+                    }                                                                                               \
+                    if (fresh != nullptr) {                                                                         \
+                        if (!chunk.PublishIfEmpty(idx, fresh)) {                                                    \
+                            delete fresh;                                                                           \
+                            g = chunk.Load(idx);                                                                    \
+                        } else {                                                                                    \
+                            g = fresh;                                                                              \
+                        }                                                                                           \
+                    }                                                                                               \
+                }                                                                                                   \
+                res[i] = (g != nullptr) ? g->method(right_source) : false;                                          \
+            }                                                                                                       \
+        }                                                                                                           \
+    };                                                                                                              \
+    int64_t processed_size = ProcessDataChunks<_DataType>(                                                          \
+        execute_sub_batch, std::nullptr_t{}, res, valid_res, right_source);                                         \
+    AssertInfo(processed_size == real_batch_size,                                                                   \
+               "internal error: expr processed rows {} not equal "                                                  \
+               "expect batch size {}",                                                                              \
+               processed_size,                                                                                      \
+               real_batch_size);                                                                                    \
     return res_vec;
 
 void
